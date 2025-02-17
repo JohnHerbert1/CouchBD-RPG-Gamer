@@ -3,6 +3,8 @@ import uuid
 import tkinter as tk
 from tkinter import messagebox, Toplevel, Label, Button, Entry, StringVar, OptionMenu, Frame
 import random
+import json
+from datetime import datetime
 
 # Configuração do CouchDB
 USER = ""
@@ -13,7 +15,6 @@ couch = couchdb.Server(COUCHDB_URL)
 DB_NAME = "battle_game"
 CHARACTER_DB_NAME = "characters"
 
-
 if DB_NAME not in couch:
     couch.create(DB_NAME)
 if CHARACTER_DB_NAME not in couch:
@@ -22,6 +23,21 @@ if CHARACTER_DB_NAME not in couch:
 db = couch[DB_NAME]
 character_db = couch[CHARACTER_DB_NAME]
 
+# Criação de um design document com uma view para melhorar a consulta dos personagens
+DESIGN_DOC_ID = "_design/characters"
+if DESIGN_DOC_ID not in character_db:
+    design_doc = {
+        "_id": DESIGN_DOC_ID,
+        "views": {
+            "by_name": {
+                "map": "function(doc) { if(doc.name) { emit(doc.name, null); } }"
+            }
+        }
+    }
+    character_db.save(design_doc)
+    print("[INFO] Design document 'characters/by_name' criado com sucesso.")
+else:
+    print("[INFO] Design document 'characters/by_name' já existe.")
 
 def create_character(name):
     if not name:
@@ -40,14 +56,18 @@ def create_character(name):
     character_db.save(char_data)
     update_character_menu()
 
-
 def read_characters():
-    """Retorna uma lista de tuplas (doc_id, nome) de todos os personagens cadastrados."""
-    return [(doc_id, character_db[doc_id]["name"]) for doc_id in character_db]
-
+    """
+    Retorna uma lista de tuplas (doc_id, nome) utilizando a view 'by_name'.
+    Essa abordagem é mais eficiente que iterar por todos os documentos.
+    """
+    result = character_db.view("characters/by_name", include_docs=True)
+    return [(row.doc["_id"], row.doc["name"]) for row in result]
 
 def update_character_menu():
-    """Atualiza o OptionMenu com a lista de personagens disponíveis."""
+    """
+    Atualiza o OptionMenu com a lista de personagens disponíveis.
+    """
     characters = [name for _, name in read_characters()]
     if characters:
         char_var.set(characters[0])
@@ -65,9 +85,10 @@ def update_character_menu():
             command=lambda: char_var.set("Nenhum personagem")
         )
 
-
 def detail_character():
-    """Exibe os detalhes do personagem selecionado em uma nova janela."""
+    """
+    Exibe os detalhes do personagem selecionado em uma nova janela.
+    """
     selected_name = char_var.get()
     doc = next((character_db[c] for c, name in read_characters() if name == selected_name), None)
     if not doc:
@@ -85,9 +106,10 @@ def detail_character():
     Label(detail_window, text=f"Defesa: {doc['defense']}").pack()
     Label(detail_window, text=f"Magia: {doc.get('magic', 8)}").pack()
 
-
 def delete_character():
-    """Exclui o personagem selecionado, após confirmação do usuário."""
+    """
+    Exclui o personagem selecionado, após confirmação do usuário.
+    """
     selected_name = char_var.get()
     doc_id = next((c for c, name in read_characters() if name == selected_name), None)
     if not doc_id:
@@ -98,7 +120,6 @@ def delete_character():
         character_db.delete(character_db[doc_id])
         update_character_menu()
         messagebox.showinfo("Excluído", f"O personagem '{selected_name}' foi excluído.")
-
 
 def generate_bot(player):
     """
@@ -127,16 +148,14 @@ def generate_bot(player):
         "defense": int(player["defense"] * factor),
         "magic": int(player.get("magic", 8) * factor)
     }
-    print(f"[DEBUG] Bot gerado: {bot}")  # Debug
+    print(f"[DEBUG] Bot gerado: {bot}")
     return bot
-
 
 def bot_action():
     """Define aleatoriamente qual ação o bot irá tomar no turno dele."""
     action = random.choice(["attack", "defend", "magic"])
-    print(f"[DEBUG] Bot escolheu: {action}")  # Debug
+    print(f"[DEBUG] Bot escolheu: {action}")
     return action
-
 
 def compute_damage(attacker, defender, action):
     """
@@ -155,9 +174,8 @@ def compute_damage(attacker, defender, action):
         base_damage //= 2
 
     damage = max(base_damage, 1) if base_damage > 0 else 0
-    print(f"[DEBUG] {attacker.get('name', 'Atacante')} usando {action} causa {damage} de dano (base: {base_damage}) em {defender.get('name', 'Defensor')}")  # Debug
+    print(f"[DEBUG] {attacker.get('name', 'Atacante')} usando {action} causa {damage} de dano (base: {base_damage}) em {defender.get('name', 'Defensor')}")
     return damage
-
 
 def battle_turn(player, enemy, battle_window, player_hp_label, enemy_hp_label, player_action):
     """
@@ -166,28 +184,22 @@ def battle_turn(player, enemy, battle_window, player_hp_label, enemy_hp_label, p
       - Atualiza os rótulos de HP.
       - Verifica as condições de vitória.
     """
-    # Definindo os nomes para debug, se não existirem já
     player["name"] = player.get("name", "Jogador")
     enemy["name"] = enemy.get("name", "Bot")
 
-    # Define as ações escolhidas
     player["selected_action"] = player_action
     enemy_act = bot_action()
     enemy["selected_action"] = enemy_act
 
-    # Calcula os danos
     damage_to_enemy = compute_damage(player, enemy, player["selected_action"])
     damage_to_player = compute_damage(enemy, player, enemy_act)
 
-    # Aplica os danos simultaneamente
     enemy["health"] -= damage_to_enemy
     player["health"] -= damage_to_player
 
-    # Atualiza os rótulos
     player_hp_label.config(text=f"HP: {player['health']}")
     enemy_hp_label.config(text=f"HP: {enemy['health']}")
 
-    # Verifica condições de batalha
     if player["health"] <= 0 and enemy["health"] <= 0:
         messagebox.showinfo("Resultado", "Empate!")
         battle_window.destroy()
@@ -198,7 +210,6 @@ def battle_turn(player, enemy, battle_window, player_hp_label, enemy_hp_label, p
         return
     elif enemy["health"] <= 0:
         messagebox.showinfo("Resultado", f"{player['name']} venceu!")
-        # Atualiza vitórias e XP
         player["wins"] = player.get("wins", 0) + 1
         xp_gained = random.randint(10, 20)
         player["experience"] += xp_gained
@@ -218,7 +229,6 @@ def battle_turn(player, enemy, battle_window, player_hp_label, enemy_hp_label, p
                                 f"Agora está no nível {player['level']} e ganhou +5 em cada atributo.")
         character_db.save(player)
 
-        # Gera um novo bot balanceado com base nos status atualizados do jogador
         if messagebox.askyesno("Continuar", "Deseja continuar batalhando?"):
             new_bot = generate_bot(player)
             enemy.clear()
@@ -229,7 +239,6 @@ def battle_turn(player, enemy, battle_window, player_hp_label, enemy_hp_label, p
             battle_window.destroy()
             return
 
-
 def start_battle_versus_bot():
     """
     Inicia a tela de batalha contra o bot, exibindo as informações do jogador e do bot,
@@ -238,17 +247,14 @@ def start_battle_versus_bot():
     battle_window = Toplevel(root)
     battle_window.title("Batalha contra Bot")
 
-    # Recupera o personagem selecionado
     player_name = char_var.get()
     player_data = next((character_db[c] for c, name in read_characters() if name == player_name), None)
     if not player_data:
         messagebox.showerror("Erro", "Selecione um personagem válido.")
         return
 
-    # Gera o bot usando os status atuais do jogador
     bot_data = generate_bot(player_data)
 
-    # Cria os frames e rótulos para exibição
     top_frame = Frame(battle_window)
     top_frame.pack(pady=10)
 
@@ -279,6 +285,23 @@ def start_battle_versus_bot():
     Button(actions_frame, text="Magia", width=10, command=lambda: player_choice("magic")).pack(side="left", padx=5)
     Button(actions_frame, text="Defender", width=10, command=lambda: player_choice("defend")).pack(side="left", padx=5)
 
+# Função de Backup: salva os dados do banco de personagens em um arquivo JSON
+def backup_database():
+    backup_data = []
+    for doc_id in character_db:
+        backup_data.append(dict(character_db[doc_id]))
+    backup_filename = f"characters_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    try:
+        with open(backup_filename, "w", encoding="utf-8") as f:
+            json.dump(backup_data, f, ensure_ascii=False, indent=4)
+        print(f"[INFO] Backup realizado com sucesso: {backup_filename}")
+    except Exception as e:
+        print(f"[ERROR] Falha ao realizar backup: {e}")
+
+# Função para agendar backups automáticos (ex.: a cada 5 minutos = 300000 ms)
+def schedule_backup():
+    backup_database()
+    root.after(300000, schedule_backup)  # 300000 ms = 5 minutos
 
 # Janela principal
 root = tk.Tk()
@@ -301,5 +324,9 @@ action_frame.pack(pady=10)
 Button(action_frame, text="Detalhar Personagem", command=detail_character).pack(side="left", padx=5)
 Button(action_frame, text="Excluir Personagem", command=delete_character).pack(side="left", padx=5)
 Button(action_frame, text="Batalha contra Bot", command=start_battle_versus_bot).pack(side="left", padx=5)
+Button(action_frame, text="Backup Manual", command=backup_database).pack(side="left", padx=5)
+
+# Inicia o agendamento dos backups automáticos
+schedule_backup()
 
 root.mainloop()
